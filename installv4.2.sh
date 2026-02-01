@@ -136,10 +136,30 @@ EOF
 
     systemctl restart xray
 
-    SHARE_LINK="vless://$UUID@$DOMAIN:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&fp=chrome&sni=$SERVER_NAME&sid=$SHORTID&pbk=$PUBLIC&type=tcp#Reality-$DOMAIN"
+    # 放行防火墙端口
+    echo -e "${BLUE}放行防火墙端口 $REALITY_PORT ...${RESET}"
+    if command -v ufw > /dev/null 2>&1; then
+        ufw allow $REALITY_PORT/tcp
+    fi
+    if command -v firewall-cmd > /dev/null 2>&1; then
+        firewall-cmd --permanent --add-port=$REALITY_PORT/tcp
+        firewall-cmd --reload
+    fi
+    # iptables 兜底
+    iptables -I INPUT -p tcp --dport $REALITY_PORT -j ACCEPT 2>/dev/null || true
+
+    # 获取服务器真实 IP 用于分享链接
+    SERVER_IP=$(curl -s4 ifconfig.me || curl -s4 ip.sb || curl -s4 ipinfo.io/ip)
+    if [[ -z "$SERVER_IP" ]]; then
+        SERVER_IP="$DOMAIN"
+    fi
+
+    SHARE_LINK="vless://$UUID@$SERVER_IP:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&fp=chrome&sni=$SERVER_NAME&sid=$SHORTID&pbk=$PUBLIC&type=tcp#Reality-$DOMAIN"
     echo "$SHARE_LINK" > $SHARE_FILE
 
     echo -e "${GREEN}安装完成！${RESET}"
+    echo -e "服务器IP：${CYAN}$SERVER_IP${RESET}"
+    echo -e "Reality端口：${CYAN}$REALITY_PORT${RESET}"
     echo -e "分享链接：${CYAN}$SHARE_LINK${RESET}"
     pause
 }
@@ -170,13 +190,19 @@ auto_repair() {
     echo -e "${BLUE}修复 Xray 服务...${RESET}"
     systemctl restart xray
 
-    echo -e "${BLUE}检查端口冲突...${RESET}"
+    echo -e "${BLUE}检查端口监听状态...${RESET}"
     PORT=$(jq '.inbounds[0].port' $CONFIG_FILE)
     if ss -tln | grep -q ":$PORT "; then
-        echo -e "${RED}端口冲突！重新生成端口...${RESET}"
+        echo -e "${GREEN}✔ Reality 端口 $PORT 正常监听${RESET}"
+    else
+        echo -e "${RED}端口 $PORT 未监听，尝试重新生成端口...${RESET}"
         NEW_PORT=$(generate_random_port)
         jq ".inbounds[0].port = $NEW_PORT" $CONFIG_FILE > $CONFIG_FILE.tmp
         mv $CONFIG_FILE.tmp $CONFIG_FILE
+        # 放行新端口
+        ufw allow $NEW_PORT/tcp 2>/dev/null || true
+        firewall-cmd --permanent --add-port=$NEW_PORT/tcp 2>/dev/null && firewall-cmd --reload 2>/dev/null || true
+        iptables -I INPUT -p tcp --dport $NEW_PORT -j ACCEPT 2>/dev/null || true
         systemctl restart xray
         echo -e "${GREEN}已切换端口到：$NEW_PORT${RESET}"
     fi
