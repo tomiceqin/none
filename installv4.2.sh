@@ -60,11 +60,31 @@ install_xray() {
     echo -e "${YELLOW}请输入你的真实域名（用于 HTTPS 网站）：${RESET}"
     read -p "Domain: " DOMAIN
 
-    echo -e "${YELLOW}请输入 Reality serverName（例如：www.cloudflare.com）：${RESET}"
-    read -p "serverName: " SERVER_NAME
+    echo -e "${YELLOW}请选择 Reality 伪装目标网站：${RESET}"
+    echo -e "${CYAN}1) www.microsoft.com （推荐，稳定）${RESET}"
+    echo -e "${CYAN}2) www.apple.com${RESET}"
+    echo -e "${CYAN}3) gateway.icloud.com （推荐，低延迟）${RESET}"
+    echo -e "${CYAN}4) www.cloudflare.com${RESET}"
+    echo -e "${CYAN}5) www.tesla.com${RESET}"
+    echo -e "${CYAN}6) 自定义输入${RESET}"
+    read -p "选择 [1-6]: " DEST_CHOICE
 
-    echo -e "${YELLOW}请输入 Reality dest（例如：www.cloudflare.com:443）：${RESET}"
-    read -p "dest: " DEST
+    case $DEST_CHOICE in
+        1) SERVER_NAME="www.microsoft.com" ;;
+        2) SERVER_NAME="www.apple.com" ;;
+        3) SERVER_NAME="gateway.icloud.com" ;;
+        4) SERVER_NAME="www.cloudflare.com" ;;
+        5) SERVER_NAME="www.tesla.com" ;;
+        6)
+            echo -e "${YELLOW}请输入 Reality serverName（必须支持 TLS 1.3）：${RESET}"
+            read -p "serverName: " SERVER_NAME
+            ;;
+        *) SERVER_NAME="www.microsoft.com" ;;
+    esac
+
+    # dest 自动与 serverName 匹配，确保证书一致
+    DEST="${SERVER_NAME}:443"
+    echo -e "${GREEN}已选择目标: ${SERVER_NAME}${RESET}"
 
     UUID=$(cat /proc/sys/kernel/random/uuid)
 
@@ -125,6 +145,7 @@ cat >$CONFIG_FILE <<EOF
           "serverNames": ["$SERVER_NAME"],
           "privateKey": "$PRIVATE",
           "shortIds": ["$SHORTID"],
+          "fingerprint": "chrome",
           "xver": 0
         }
       }
