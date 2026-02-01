@@ -1,142 +1,104 @@
 #!/bin/bash
 set -e
 
-# ==================== Colors ====================
+# =====================================================
+#  Color Setup
+# =====================================================
 GREEN="\033[32m"
 YELLOW="\033[33m"
 RED="\033[31m"
 BLUE="\033[36m"
+CYAN="\033[96m"
 RESET="\033[0m"
 
-echo -e "${GREEN}==========================================================${RESET}"
-echo -e "${GREEN}        Xray VLESS + Reality + TLS + Website Installer     ${RESET}"
-echo -e "${GREEN}==========================================================${RESET}"
-
-# ==================== Input Region ====================
-echo -e "${YELLOW}请输入你的真实域名（用于 HTTPS 网站 & 证书）：${RESET}"
-read -p "Domain: " DOMAIN
-
-echo -e "${YELLOW}请输入 Reality 伪装域名 serverName（如：www.cloudflare.com）：${RESET}"
-read -p "serverName: " SERVER_NAME
-
-echo -e "${YELLOW}请输入 Reality dest（如：www.cloudflare.com:443）：${RESET}"
-read -p "dest: " DEST
-
-UUID=$(cat /proc/sys/kernel/random/uuid)
-XRAY_CONFIG="/usr/local/etc/xray/config.json"
+CONFIG_FILE="/usr/local/etc/xray/config.json"
+SHARE_FILE="/usr/local/etc/xray/share.txt"
 WEBROOT="/var/www/html"
+XRAY_BIN="/usr/local/bin/xray"
 
-echo -e "${BLUE}配置确认：${RESET}"
-echo -e " 域名:        ${GREEN}$DOMAIN${RESET}"
-echo -e " serverName:  ${GREEN}$SERVER_NAME${RESET}"
-echo -e " dest:        ${GREEN}$DEST${RESET}"
-echo -e " UUID:        ${GREEN}$UUID${RESET}"
-sleep 1
+# =====================================================
+banner() {
+    echo -e "${GREEN}"
+    echo "============================================================"
+    echo "      Xray VLESS + Reality + TLS Installer v4 旗舰版"
+    echo "============================================================"
+    echo -e "${RESET}"
+}
 
-# ==================== Port Check ====================
-check_port() {
-    if lsof -i:"$1" >/dev/null 2>&1; then
-        echo -e "${RED}[错误] 端口 $1 已被占用，请先处理后再运行脚本！${RESET}"
+pause() { echo -e "${YELLOW}按回车继续...${RESET}"; read -r; }
+
+# =====================================================
+#  Reality Keypair Generator — V4 自适应解析（新旧兼容）
+# =====================================================
+generate_reality_keys() {
+    OUT=$($XRAY_BIN x25519 2>/dev/null || true)
+
+    PRIVATE=$(echo "$OUT" | grep -E 'PrivateKey' | awk -F ': ' '{print $2}')
+    PUBLIC=$(echo "$OUT"  | grep -E 'Password'   | awk -F ': ' '{print $2}')
+    HASH32=$(echo "$OUT"  | grep -E 'Hash32'     | awk -F ': ' '{print $2}')
+
+    [[ -z "$PRIVATE" ]] && PRIVATE=$(echo "$OUT" | grep "Private key" | awk '{print $3}')
+    [[ -z "$PUBLIC"  ]] && PUBLIC=$(echo "$OUT" | grep "Public key"  | awk '{print $3}')
+
+    if [[ -z "$PRIVATE" || -z "$PUBLIC" ]]; then
+        echo -e "${RED}[ERROR] Reality 密钥生成失败${RESET}"
         exit 1
     fi
 }
 
-echo -e "${YELLOW}检查 80 和 443 端口占用情况...${RESET}"
-check_port 80
-check_port 443
+# =====================================================
+#  Install Function
+# =====================================================
+install_xray() {
+    clear; banner
 
-# ==================== Update System ====================
-echo -e "${YELLOW}更新系统...${RESET}"
-apt update -y
-apt install -y curl wget socat nginx
+    echo -e "${YELLOW}请输入你的真实域名:${RESET}"
+    read -p "Domain: " DOMAIN
 
-# ==================== Install Xray ====================
-echo -e "${YELLOW}正在安装 Xray-core ...${RESET}"
-bash <(curl -L https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
+    echo -e "${YELLOW}Reality serverName:${RESET}"
+    read -p "serverName: " SERVER_NAME
 
-# Give filesystem time to sync
-sleep 2
+    echo -e "${YELLOW}Reality dest:${RESET}"
+    read -p "dest: " DEST
 
-# ==================== Verify Xray Installed ====================
-if ! command -v xray >/dev/null 2>&1; then
-    echo -e "${RED}[致命错误] Xray 未成功安装，无法继续！${RESET}"
-    exit 1
-fi
-echo -e "${GREEN}Xray 安装成功！${RESET}"
+    UUID=$(cat /proc/sys/kernel/random/uuid)
 
-# ==================== Generate Reality Keypair ====================
-echo -e "${YELLOW}正在生成 Reality Keypair ...${RESET}"
+    apt update && apt install -y nginx wget curl socat
 
-generate_keys() {
-    OUT=$(xray x25519 2>/dev/null || true)
-    PRIVATE=$(echo "$OUT" | grep Private | awk '{print $3}')
-    PUBLIC=$(echo "$OUT" | grep Public | awk '{print $3}')
-}
-
-generate_keys
-
-if [[ -z "$PRIVATE" || -z "$PUBLIC" ]]; then
-    echo -e "${RED}[警告] Reality 密钥生成失败，正在重试...${RESET}"
+    # 安装 Xray
+    bash <(curl -L https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
     sleep 2
-    generate_keys
-fi
 
-if [[ -z "$PRIVATE" || -z "$PUBLIC" ]]; then
-    echo -e "${RED}[致命错误] Reality 密钥仍然为空！请检查 xray 可执行性！${RESET}"
-    exit 1
-fi
+    generate_reality_keys
+    SHORTID=$(openssl rand -hex 3)
 
-SHORT_ID=$(openssl rand -hex 3)
-
-echo -e "${GREEN}Reality 私钥: ${RESET}$PRIVATE"
-echo -e "${GREEN}Reality 公钥: ${RESET}$PUBLIC"
-echo -e "${GREEN}shortId: ${RESET}$SHORT_ID"
-
-# ==================== Configure Nginx ====================
-echo -e "${YELLOW}安装网站 & 配置 Nginx ...${RESET}"
-
-mkdir -p $WEBROOT
-echo "<h1>Welcome to $DOMAIN</h1>" > $WEBROOT/index.html
+    mkdir -p $WEBROOT
+    echo "<h1>Welcome to $DOMAIN</h1>" > $WEBROOT/index.html
 
 cat >/etc/nginx/sites-available/$DOMAIN.conf <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
-
     root $WEBROOT;
     index index.html;
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/$DOMAIN.conf /etc/nginx/sites-enabled/
-nginx -t && systemctl restart nginx
+    ln -sf /etc/nginx/sites-available/$DOMAIN.conf /etc/nginx/sites-enabled/
 
-# ==================== Install HTTPS Certificate ====================
-echo -e "${YELLOW}申请 Let's Encrypt 证书 ...${RESET}"
-apt install -y certbot python3-certbot-nginx
+    apt install -y certbot python3-certbot-nginx
+    certbot --nginx --agree-tos --redirect -m admin@$DOMAIN -d $DOMAIN --non-interactive
 
-certbot --nginx --agree-tos --redirect \
-    -d $DOMAIN -m admin@$DOMAIN --non-interactive
-
-# ==================== Write Xray Config ====================
-echo -e "${YELLOW}写入 Xray Reality 配置 ...${RESET}"
-
-cat >$XRAY_CONFIG <<EOF
+# ================= Xray Config ========================
+cat >$CONFIG_FILE <<EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
+  "log": {"loglevel": "warning"},
   "inbounds": [
     {
       "port": 443,
       "protocol": "vless",
       "settings": {
-        "clients": [
-          {
-            "id": "$UUID",
-            "flow": "xtls-rprx-vision"
-          }
-        ],
+        "clients": [{"id": "$UUID", "flow": "xtls-rprx-vision"}],
         "decryption": "none"
       },
       "streamSettings": {
@@ -147,39 +109,153 @@ cat >$XRAY_CONFIG <<EOF
           "dest": "$DEST",
           "serverNames": ["$SERVER_NAME"],
           "privateKey": "$PRIVATE",
-          "shortIds": ["$SHORT_ID"],
+          "shortIds": ["$SHORTID"],
           "xver": 0
         }
       }
     }
   ],
-  "outbounds": [
-    {
-      "protocol": "freedom"
-    }
-  ]
+  "outbounds": [{"protocol": "freedom"}]
 }
 EOF
 
-# ==================== Restart Xray ====================
-echo -e "${YELLOW}重启 Xray ...${RESET}"
-systemctl enable xray --now
-systemctl restart xray
+    systemctl restart xray
 
-echo -e "${GREEN}==========================================================${RESET}"
-echo -e "${GREEN}  Xray Reality + TLS + HTTPS 网站 已成功部署！${RESET}"
-echo -e "${GREEN}==========================================================${RESET}"
+    SHARE_LINK="vless://$UUID@$DOMAIN:443?encryption=none&flow=xtls-rprx-vision&security=reality&fp=chrome&sni=$SERVER_NAME&sid=$SHORTID&pbk=$PUBLIC&type=tcp#Reality-$DOMAIN"
+    echo "$SHARE_LINK" > $SHARE_FILE
 
-echo -e "${BLUE}客户端连接信息：${RESET}"
-echo -e " 地址:            ${GREEN}$DOMAIN${RESET}"
-echo -e " 端口:            ${GREEN}443${RESET}"
-echo -e " UUID:            ${GREEN}$UUID${RESET}"
-echo -e " flow:            ${GREEN}xtls-rprx-vision${RESET}"
-echo -e " Reality 公钥:    ${GREEN}$PUBLIC${RESET}"
-echo -e " Reality 私钥:    ${GREEN}$PRIVATE${RESET}"
-echo -e " shortId:         ${GREEN}$SHORT_ID${RESET}"
-echo -e " serverName:      ${GREEN}$SERVER_NAME${RESET}"
-echo -e " dest:            ${GREEN}$DEST${RESET}"
-echo -e " uTLS 指纹:       ${GREEN}chrome${RESET}"
-echo -e "${GREEN}网站目录:         ${RESET}$WEBROOT"
-echo -e "${GREEN}你可以直接上传静态网站！${RESET}"
+    echo -e "${GREEN}安装完成！${RESET}"
+    echo -e "分享链接：${CYAN}$SHARE_LINK${RESET}"
+    pause
+}
+
+# =====================================================
+#  Health Check 面板
+# =====================================================
+health_check() {
+    clear; banner
+    echo -e "${CYAN}============ 健康检查 Health Check ============${RESET}"
+
+    echo -e "${BLUE}1) Xray 服务状态:${RESET}"
+    systemctl is-active --quiet xray && echo -e "  ${GREEN}✔ 正常${RESET}" || echo -e "  ${RED}✘ 异常${RESET}"
+
+    echo -e "${BLUE}2) 80/443 端口检查:${RESET}"
+    lsof -i:443 >/dev/null && echo -e "  ${GREEN}✔ 443 正常${RESET}" || echo -e "  ${RED}✘ 443 未监听${RESET}"
+
+    lsof -i:80 >/dev/null && echo -e "  ${GREEN}✔ 80 正常${RESET}" || echo -e "  ${RED}✘ 80 未监听${RESET}"
+
+    echo -e "${BLUE}3) TLS 证书检查:${RESET}"
+    if [[ -d "/etc/letsencrypt/live" ]]; then
+        echo -e "  ${GREEN}✔ 已找到证书${RESET}"
+    else
+        echo -e "  ${RED}✘ 未找到证书${RESET}"
+    fi
+
+    echo -e "${BLUE}4) Reality 握手检查:${RESET}"
+    if grep -q "reality" $CONFIG_FILE; then
+        echo -e "  ${GREEN}✔ Reality 配置存在${RESET}"
+    else
+        echo -e "  ${RED}✘ Reality 配置缺失${RESET}"
+    fi
+
+    pause
+}
+
+# =====================================================
+# 自动修复 Auto Repair
+# =====================================================
+auto_repair() {
+    clear; banner
+    echo -e "${CYAN}============ 自动修复 Auto Repair ============${RESET}"
+
+    echo -e "${BLUE}修复 Xray 服务...${RESET}"
+    systemctl restart xray && echo -e "  ${GREEN}✔ Xray 已重启${RESET}"
+
+    echo -e "${BLUE}修复证书...${RESET}"
+    certbot renew --force-renewal && echo -e "  ${GREEN}✔ 证书更新成功${RESET}"
+
+    echo -e "${BLUE}修复 Nginx...${RESET}"
+    systemctl restart nginx && echo -e "  ${GREEN}✔ Nginx 已重启${RESET}"
+
+    # 重新生成 Reality keypair
+    echo -e "${BLUE}检查 Reality Keypair ...${RESET}"
+    generate_reality_keys
+    echo -e "  ${GREEN}✔ Reality Keypair 正常${RESET}"
+
+    pause
+}
+
+# =====================================================
+# 日志面板 Log Panel
+# =====================================================
+log_panel() {
+    clear; banner
+
+    echo -e "${BLUE}1) 实时 Xray 日志"
+    echo -e "2) 仅 ERROR/WARNING"
+    echo -e "3) Nginx 错误日志"
+    echo -e "0) 返回${RESET}"
+
+    read -p "选择: " L
+
+    case $L in
+        1) journalctl -u xray -f ;;
+        2) journalctl -u xray -f | grep -E "error|warning|fail" ;;
+        3) tail -f /var/log/nginx/error.log ;;
+    esac
+}
+
+# =====================================================
+# 导出分享链接 + 二维码
+# =====================================================
+export_info() {
+    clear; banner
+    echo -e "${CYAN}============ 分享链接导出 ============${RESET}"
+
+    if [[ ! -f "$SHARE_FILE" ]]; then
+        echo -e "${RED}未找到 share.txt${RESET}"
+        pause
+        return
+    fi
+
+    LINK=$(cat $SHARE_FILE)
+    echo -e "${GREEN}$LINK${RESET}"
+
+    echo -e "${YELLOW}是否生成二维码？ (y/n)${RESET}"
+    read ans
+    if [[ "$ans" == "y" ]]; then
+        apt install -y qrencode
+        qrencode -t ANSIUTF8 "$LINK"
+    fi
+
+    pause
+}
+
+# =====================================================
+# 主菜单 MENU
+# =====================================================
+while true; do
+    clear
+    banner
+    echo -e "${BLUE}1) 安装 Xray Reality + TLS + 网站"
+    echo -e "2) 健康检查 (Health Check)"
+    echo -e "3) 自动修复 Auto Repair"
+    echo -e "4) 日志面板 Log Panel"
+    echo -e "5) 导出分享链接 (含二维码)"
+    echo -e "6) 重启 Xray"
+    echo -e "7) 重启 Nginx"
+    echo -e "0) 退出${RESET}"
+    read -p "选择: " NUM
+
+    case $NUM in
+        1) install_xray ;;
+        2) health_check ;;
+        3) auto_repair ;;
+        4) log_panel ;;
+        5) export_info ;;
+        6) systemctl restart xray ;;
+        7) systemctl restart nginx ;;
+        0) exit ;;
+        *) echo -e "${RED}无效选择${RESET}" && pause ;;
+    esac
+done
